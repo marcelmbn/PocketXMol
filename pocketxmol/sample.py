@@ -71,6 +71,7 @@ class SamplingRequest:
     pocket_center: Optional[Sequence[float]] = None
     variable_mol_size: Optional[Dict[str, Any]] = None
     save_output: Optional[Sequence[str]] = None
+    output_mode: str = "full"
 
 
 def print_pool_status(pool, logger, is_pep: bool = False) -> None:
@@ -224,6 +225,7 @@ def run_sampling(
     pocket_center: Optional[Sequence[float]] = None,
     variable_mol_size: Optional[Dict[str, Any]] = None,
     save_output: Optional[Sequence[str]] = None,
+    output_mode: Optional[str] = None,
     request: Optional[SamplingRequest] = None,
 ) -> Dict[str, Any]:
     """Run PocketXMol sampling from Python.
@@ -268,8 +270,11 @@ def run_sampling(
             "pocket_center": pocket_center,
             "variable_mol_size": variable_mol_size,
             "save_output": save_output,
+            "output_mode": output_mode,
         },
     )
+    if request.output_mode not in {"full", "minimal"}:
+        raise ValueError("output_mode must be either 'full' or 'minimal'.")
     config = _build_config(request)
     config_name = os.path.basename(request.config_task).replace(".yml", "")
     if request.config_model is not None:
@@ -290,6 +295,9 @@ def run_sampling(
     train_config = make_config(os.path.join(cfg_dir, "".join(os.listdir(cfg_dir))))
 
     save_traj_prob = config.sample.save_traj_prob
+    minimal_output = request.output_mode == "minimal"
+    if minimal_output:
+        save_traj_prob = 0.0
     batch_size = (
         config.sample.batch_size if request.batch_size is None else request.batch_size
     )
@@ -302,13 +310,15 @@ def run_sampling(
     logger.info("Load from %s..." % config.model.checkpoint)
     logger.info({"request": asdict(request)})
     logger.info(config)
-    save_config(config, os.path.join(log_dir, os.path.basename(request.config_task)))
+    if not minimal_output:
+        save_config(config, os.path.join(log_dir, os.path.basename(request.config_task)))
 
     sdf_dir = os.path.join(log_dir, "SDF")
     pure_sdf_dir = os.path.join(log_dir, os.path.basename(log_dir) + "_SDF")
-    os.makedirs(sdf_dir, exist_ok=True)
     os.makedirs(pure_sdf_dir, exist_ok=True)
-    df_path = os.path.join(log_dir, "gen_info.csv")
+    if not minimal_output:
+        os.makedirs(sdf_dir, exist_ok=True)
+    df_path = os.path.join(log_dir, "gen_info.csv") if not minimal_output else None
 
     logger.info("Loading data placeholder...")
     for samp_trans in config.get("transforms", {}).keys():
@@ -383,13 +393,16 @@ def run_sampling(
         exclude_keys=exclude_keys,
     )
 
-    input_pocmol_dir = os.path.join(pure_sdf_dir, "0_inputs")
-    os.makedirs(input_pocmol_dir, exist_ok=True)
-    pocket_block_path = os.path.join(input_pocmol_dir, "pocket_block.pdb")
-    input_mol_path = os.path.join(input_pocmol_dir, "input_mol.sdf")
-    with open(pocket_block_path, "w") as f:
-        f.write(pocket_block)
-    Chem.MolToMolFile(in_mol, input_mol_path)
+    pocket_block_path = None
+    input_mol_path = None
+    if not minimal_output:
+        input_pocmol_dir = os.path.join(pure_sdf_dir, "0_inputs")
+        os.makedirs(input_pocmol_dir, exist_ok=True)
+        pocket_block_path = os.path.join(input_pocmol_dir, "pocket_block.pdb")
+        input_mol_path = os.path.join(input_pocmol_dir, "input_mol.sdf")
+        with open(pocket_block_path, "w") as f:
+            f.write(pocket_block)
+        Chem.MolToMolFile(in_mol, input_mol_path)
 
     logger.info("Loading diffusion model...")
     if train_config.model.name == "pm_asym_denoiser":
@@ -562,7 +575,7 @@ def run_sampling(
                         output["confidence_halfedge"].detach().cpu().numpy().mean()
                     )
                     save_output = getattr(config.sample, "save_output", [])
-                    if len(save_output) > 0:
+                    if not minimal_output and len(save_output) > 0:
                         output_to_save = {key: output[key] for key in save_output}
                         torch.save(
                             output_to_save, os.path.join(sdf_dir, filename_base + ".pt")
@@ -603,13 +616,14 @@ def run_sampling(
                         }
                     )
 
-                df_info_batch = pd.DataFrame(df_info_batch)
-                if os.path.exists(df_path):
-                    df_info = pd.read_csv(df_path)
-                    df_info = pd.concat([df_info, df_info_batch], ignore_index=True)
-                else:
-                    df_info = df_info_batch
-                df_info.to_csv(df_path, index=False)
+                if not minimal_output:
+                    df_info_batch = pd.DataFrame(df_info_batch)
+                    if os.path.exists(df_path):
+                        df_info = pd.read_csv(df_path)
+                        df_info = pd.concat([df_info, df_info_batch], ignore_index=True)
+                    else:
+                        df_info = df_info_batch
+                    df_info.to_csv(df_path, index=False)
                 print_pool_status(pool, logger, is_pep=is_pep)
 
                 del batch, outputs, trajs, mol_info_list[0 : len(mol_info_list)]
@@ -618,15 +632,16 @@ def run_sampling(
                         torch.cuda.empty_cache()
                 gc.collect()
 
-        dummy_pool = {key: [""] * len(value) for key, value in pool.items()}
-        torch.save(dummy_pool, os.path.join(log_dir, "samples_all.pt"))
+        if not minimal_output:
+            dummy_pool = {key: [""] * len(value) for key, value in pool.items()}
+            torch.save(dummy_pool, os.path.join(log_dir, "samples_all.pt"))
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt. Stop sampling.")
 
     return {
         "log_dir": log_dir,
         "sdf_dir": pure_sdf_dir,
-        "traj_dir": sdf_dir,
+        "traj_dir": None if minimal_output else sdf_dir,
         "df_path": df_path,
         "pocket_block_path": pocket_block_path,
         "input_mol_path": input_mol_path,
@@ -654,6 +669,7 @@ def run_sampling_simple(
     device: str = "cuda:0",
     data_id: Optional[str] = None,
     pdbid: Optional[str] = None,
+    output_mode: str = "full",
 ) -> Dict[str, Any]:
     """Run sampling with only the most relevant inputs.
 
@@ -670,4 +686,5 @@ def run_sampling_simple(
         device=device,
         data_id=data_id,
         pdbid=pdbid,
+        output_mode=output_mode,
     )

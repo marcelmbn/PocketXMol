@@ -29,6 +29,7 @@ class SamplingSimpleRequest(BaseModel):
     device: str = Field(default="cuda:0")
     data_id: Optional[str] = Field(default=None)
     pdbid: Optional[str] = Field(default=None)
+    output_mode: str = Field(default="full", pattern="^(full|minimal)$")
 
 
 class SamplingRequestModel(BaseModel):
@@ -58,6 +59,7 @@ class SamplingRequestModel(BaseModel):
     )
     variable_mol_size: Optional[Dict[str, Any]] = Field(default=None)
     save_output: Optional[List[str]] = Field(default=None)
+    output_mode: Optional[str] = Field(default=None, pattern="^(full|minimal)$")
 
 
 def _require_cuda(device: str) -> None:
@@ -146,6 +148,7 @@ async def sample_simple(payload: SamplingSimpleRequest) -> Dict[str, Any]:
             device=payload.device,
             data_id=payload.data_id,
             pdbid=payload.pdbid,
+            output_mode=payload.output_mode,
         )
         runtime = time.perf_counter() - start
     except FileNotFoundError as exc:
