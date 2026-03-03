@@ -1,8 +1,8 @@
 
 sample:
   seed: 2024
-  batch_size: 100
-  num_mols: 100
+  batch_size: 50
+  num_mols: 50
   save_traj_prob: 0.02
 
 
@@ -43,14 +43,14 @@ task:
 
 noise:
   name: maskfill
-  num_steps: 100
+  num_steps: 50
   ar_config:
     strategy: refine
     r: 3
     threshold_node: 0.98
     threshold_pos: 0.91
     threshold_bond: 0.98
-    max_ar_step: 10
+    max_ar_step: 5
     change_init_step: 1
   prior:
     part1: from_train
